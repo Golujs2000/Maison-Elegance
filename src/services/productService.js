@@ -9,96 +9,29 @@ import {
   writeBatch,
   query,
   where,
-  orderBy,
-  serverTimestamp,
 } from "firebase/firestore";
-import { db, isFirebaseConfigured } from "../firebase/config";
-import { INITIAL_PRODUCTS } from "../data/initialData";
-import { STORAGE_KEYS } from "../utils/constants";
+import { db } from "../firebase/config";
 
 const PRODUCTS_COLLECTION = "products";
 
-// Helper to initialize local storage fallback
-function getLocalProducts() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEYS.PRODUCTS);
-    if (raw) {
-      const stored = JSON.parse(raw);
-      if (Array.isArray(stored)) {
-        let needsSave = false;
-        const existingIds = new Set(stored.map((p) => p.id));
-        const missing = INITIAL_PRODUCTS.filter((p) => !existingIds.has(p.id));
-        if (missing.length > 0) {
-          stored.push(...missing);
-          needsSave = true;
-        }
-
-        // Auto-fix prod-14 media if cached with old photo URL
-        const p14 = stored.find((p) => p.id === "prod-14");
-        if (p14 && (p14.media?.[1]?.url?.includes("photo-1580481077195") || p14.media?.[0]?.url?.includes("photo-1505797149"))) {
-          p14.media = [
-            { type: "image", url: "/leather-desk-chair.jpg", source: "url", isPrimary: true },
-            { type: "image", url: "/leather-chair-detail.jpg", source: "url" }
-          ];
-          needsSave = true;
-        }
-
-        if (needsSave) {
-          saveLocalProducts(stored);
-        }
-        return stored;
-      }
-    }
-  } catch (e) {
-    console.error("Local storage read error", e);
-  }
-  localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(INITIAL_PRODUCTS));
-  return INITIAL_PRODUCTS;
-}
-
-function saveLocalProducts(products) {
-  try {
-    localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(products));
-  } catch (e) {
-    console.error("Local storage save error", e);
-  }
-}
-
 /**
- * Fetch all products with optional filters
+ * Fetch all products directly from Firestore with optional filtering
  */
 export async function getProducts(filters = {}) {
-  if (isFirebaseConfigured && db) {
-    try {
-      const colRef = collection(db, PRODUCTS_COLLECTION);
-      let q = query(colRef);
-
-      if (filters.category && filters.category !== "all") {
-        q = query(colRef, where("category", "==", filters.category));
-      }
-
-      const snapshot = await getDocs(q);
-      if (!snapshot.empty) {
-        let list = snapshot.docs.map((docSnap) => ({
-          id: docSnap.id,
-          ...docSnap.data(),
-        }));
-
-        // Sort by sortOrder, then createdAt
-        list.sort((a, b) => (a.sortOrder || 999) - (b.sortOrder || 999));
-        return list;
-      }
-    } catch (err) {
-      console.warn("Firestore fetch error, falling back to cached products:", err);
-    }
-  }
-
-  // Fallback to local products
-  let list = getLocalProducts();
+  const colRef = collection(db, PRODUCTS_COLLECTION);
+  let q = query(colRef);
 
   if (filters.category && filters.category !== "all") {
-    list = list.filter((p) => p.category === filters.category);
+    q = query(colRef, where("category", "==", filters.category));
   }
+
+  const snapshot = await getDocs(q);
+  let list = snapshot.docs.map((docSnap) => ({
+    id: docSnap.id,
+    ...docSnap.data(),
+  }));
+
+  // Client-side filtering for tags, status, isFeatured, and search
   if (filters.isFeatured !== undefined) {
     list = list.filter((p) => p.isFeatured === filters.isFeatured);
   }
@@ -123,39 +56,40 @@ export async function getProducts(filters = {}) {
 }
 
 /**
- * Get single product by id or slug
+ * Get single product by id or slug directly from Firestore
  */
 export async function getProductById(idOrSlug) {
-  if (isFirebaseConfigured && db) {
-    try {
-      const docRef = doc(db, PRODUCTS_COLLECTION, idOrSlug);
-      const snap = await getDoc(docRef);
-      if (snap.exists()) {
-        return { id: snap.id, ...snap.data() };
-      }
+  if (!idOrSlug) return null;
 
-      // Query by slug if not found by id
-      const q = query(collection(db, PRODUCTS_COLLECTION), where("slug", "==", idOrSlug));
-      const querySnap = await getDocs(q);
-      if (!querySnap.empty) {
-        const item = querySnap.docs[0];
-        return { id: item.id, ...item.data() };
-      }
-    } catch (err) {
-      console.warn("Firestore get error:", err);
-    }
+  // 1. Try fetching by document ID
+  const docRef = doc(db, PRODUCTS_COLLECTION, idOrSlug);
+  const snap = await getDoc(docRef);
+  if (snap.exists()) {
+    return { id: snap.id, ...snap.data() };
   }
 
-  const all = getLocalProducts();
-  return all.find((p) => p.id === idOrSlug || p.slug === idOrSlug) || null;
+  // 2. Query by slug
+  const q = query(collection(db, PRODUCTS_COLLECTION), where("slug", "==", idOrSlug));
+  const querySnap = await getDocs(q);
+  if (!querySnap.empty) {
+    const item = querySnap.docs[0];
+    return { id: item.id, ...item.data() };
+  }
+
+  return null;
 }
 
 /**
- * Create a new product
+ * Create a new product in Firestore
  */
 export async function createProduct(productData) {
   const newId = `prod-${Date.now()}`;
-  const slug = productData.slug || productData.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+  const slug =
+    productData.slug ||
+    productData.name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-|-$)/g, "");
 
   const fullData = {
     ...productData,
@@ -170,23 +104,13 @@ export async function createProduct(productData) {
     updatedAt: new Date().toISOString(),
   };
 
-  if (isFirebaseConfigured && db) {
-    try {
-      const docRef = doc(db, PRODUCTS_COLLECTION, newId);
-      await setDoc(docRef, fullData);
-    } catch (err) {
-      console.warn("Firestore create error:", err);
-    }
-  }
-
-  const list = getLocalProducts();
-  list.unshift(fullData);
-  saveLocalProducts(list);
+  const docRef = doc(db, PRODUCTS_COLLECTION, newId);
+  await setDoc(docRef, fullData);
   return fullData;
 }
 
 /**
- * Update an existing product
+ * Update an existing product in Firestore
  */
 export async function updateProduct(id, updates) {
   const payload = {
@@ -202,44 +126,21 @@ export async function updateProduct(id, updates) {
   if (updates.sortOrder !== undefined) payload.sortOrder = Number(updates.sortOrder);
   if (updates.lowStockThreshold !== undefined) payload.lowStockThreshold = Number(updates.lowStockThreshold);
 
-  if (isFirebaseConfigured && db) {
-    try {
-      const docRef = doc(db, PRODUCTS_COLLECTION, id);
-      await updateDoc(docRef, payload);
-    } catch (err) {
-      console.warn("Firestore update error:", err);
-    }
-  }
-
-  const list = getLocalProducts();
-  const index = list.findIndex((p) => p.id === id);
-  if (index !== -1) {
-    list[index] = { ...list[index], ...payload };
-    saveLocalProducts(list);
-    return list[index];
-  }
-  return null;
+  const docRef = doc(db, PRODUCTS_COLLECTION, id);
+  await updateDoc(docRef, payload);
+  return { id, ...payload };
 }
 
 /**
- * Delete a product
+ * Delete a product from Firestore
  */
 export async function deleteProduct(id) {
-  if (isFirebaseConfigured && db) {
-    try {
-      await deleteDoc(doc(db, PRODUCTS_COLLECTION, id));
-    } catch (err) {
-      console.warn("Firestore delete error:", err);
-    }
-  }
-
-  const list = getLocalProducts().filter((p) => p.id !== id);
-  saveLocalProducts(list);
+  await deleteDoc(doc(db, PRODUCTS_COLLECTION, id));
   return true;
 }
 
 /**
- * Duplicate a product
+ * Duplicate a product in Firestore
  */
 export async function duplicateProduct(id) {
   const original = await getProductById(id);
@@ -257,83 +158,50 @@ export async function duplicateProduct(id) {
 }
 
 /**
- * Bulk delete products
+ * Bulk delete products from Firestore
  */
 export async function bulkDeleteProducts(ids) {
   if (!ids || ids.length === 0) return true;
 
-  if (isFirebaseConfigured && db) {
-    try {
-      const batch = writeBatch(db);
-      ids.forEach((id) => {
-        batch.delete(doc(db, PRODUCTS_COLLECTION, id));
-      });
-      await batch.commit();
-    } catch (err) {
-      console.warn("Firestore bulk delete error:", err);
-    }
-  }
-
-  const list = getLocalProducts().filter((p) => !ids.includes(p.id));
-  saveLocalProducts(list);
+  const batch = writeBatch(db);
+  ids.forEach((id) => {
+    batch.delete(doc(db, PRODUCTS_COLLECTION, id));
+  });
+  await batch.commit();
   return true;
 }
 
 /**
- * Bulk update product status (active / draft)
+ * Bulk update product status in Firestore
  */
 export async function bulkUpdateStatus(ids, status) {
   if (!ids || ids.length === 0) return true;
 
-  if (isFirebaseConfigured && db) {
-    try {
-      const batch = writeBatch(db);
-      ids.forEach((id) => {
-        batch.update(doc(db, PRODUCTS_COLLECTION, id), {
-          status,
-          updatedAt: new Date().toISOString(),
-        });
-      });
-      await batch.commit();
-    } catch (err) {
-      console.warn("Firestore bulk status error:", err);
-    }
-  }
-
-  const list = getLocalProducts().map((p) =>
-    ids.includes(p.id) ? { ...p, status, updatedAt: new Date().toISOString() } : p
-  );
-  saveLocalProducts(list);
+  const batch = writeBatch(db);
+  ids.forEach((id) => {
+    batch.update(doc(db, PRODUCTS_COLLECTION, id), {
+      status,
+      updatedAt: new Date().toISOString(),
+    });
+  });
+  await batch.commit();
   return true;
 }
 
 /**
- * Bulk assign category
+ * Bulk assign category in Firestore
  */
 export async function bulkUpdateCategory(ids, categorySlug, categoryName) {
   if (!ids || ids.length === 0) return true;
 
-  if (isFirebaseConfigured && db) {
-    try {
-      const batch = writeBatch(db);
-      ids.forEach((id) => {
-        batch.update(doc(db, PRODUCTS_COLLECTION, id), {
-          category: categorySlug,
-          categoryName,
-          updatedAt: new Date().toISOString(),
-        });
-      });
-      await batch.commit();
-    } catch (err) {
-      console.warn("Firestore bulk category error:", err);
-    }
-  }
-
-  const list = getLocalProducts().map((p) =>
-    ids.includes(p.id)
-      ? { ...p, category: categorySlug, categoryName, updatedAt: new Date().toISOString() }
-      : p
-  );
-  saveLocalProducts(list);
+  const batch = writeBatch(db);
+  ids.forEach((id) => {
+    batch.update(doc(db, PRODUCTS_COLLECTION, id), {
+      category: categorySlug,
+      categoryName,
+      updatedAt: new Date().toISOString(),
+    });
+  });
+  await batch.commit();
   return true;
 }

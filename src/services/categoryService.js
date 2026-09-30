@@ -5,46 +5,25 @@ import {
   setDoc,
   updateDoc,
   deleteDoc,
+  orderBy,
+  query,
 } from "firebase/firestore";
-import { db, isFirebaseConfigured } from "../firebase/config";
-import { INITIAL_CATEGORIES } from "../data/initialData";
-import { STORAGE_KEYS } from "../utils/constants";
+import { db } from "../firebase/config";
 
 const CATEGORIES_COLLECTION = "categories";
 
-function getLocalCategories() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEYS.CATEGORIES);
-    if (raw) return JSON.parse(raw);
-  } catch (e) {
-    console.error(e);
-  }
-  localStorage.setItem(STORAGE_KEYS.CATEGORIES, JSON.stringify(INITIAL_CATEGORIES));
-  return INITIAL_CATEGORIES;
-}
-
-function saveLocalCategories(cats) {
-  try {
-    localStorage.setItem(STORAGE_KEYS.CATEGORIES, JSON.stringify(cats));
-  } catch (e) {
-    console.error(e);
-  }
-}
-
+/**
+ * Fetch all categories directly from Firestore
+ */
 export async function getCategories() {
-  if (isFirebaseConfigured && db) {
-    try {
-      const snap = await getDocs(collection(db, CATEGORIES_COLLECTION));
-      if (!snap.empty) {
-        return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      }
-    } catch (e) {
-      console.warn("Firestore categories error, fallback to local:", e);
-    }
-  }
-  return getLocalCategories();
+  const colRef = collection(db, CATEGORIES_COLLECTION);
+  const snap = await getDocs(colRef);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
 
+/**
+ * Create a new category in Firestore
+ */
 export async function createCategory(catData) {
   const slug = catData.slug || catData.name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
   const id = `cat-${Date.now()}`;
@@ -54,51 +33,30 @@ export async function createCategory(catData) {
     slug,
     productCount: 0,
     createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
   };
 
-  if (isFirebaseConfigured && db) {
-    try {
-      await setDoc(doc(db, CATEGORIES_COLLECTION, id), payload);
-    } catch (e) {
-      console.warn("Firestore error:", e);
-    }
-  }
-
-  const list = getLocalCategories();
-  list.push(payload);
-  saveLocalCategories(list);
+  await setDoc(doc(db, CATEGORIES_COLLECTION, id), payload);
   return payload;
 }
 
+/**
+ * Update an existing category in Firestore
+ */
 export async function updateCategory(id, updates) {
-  if (isFirebaseConfigured && db) {
-    try {
-      await updateDoc(doc(db, CATEGORIES_COLLECTION, id), updates);
-    } catch (e) {
-      console.warn("Firestore error:", e);
-    }
-  }
+  const payload = {
+    ...updates,
+    updatedAt: new Date().toISOString(),
+  };
 
-  const list = getLocalCategories();
-  const idx = list.findIndex((c) => c.id === id);
-  if (idx !== -1) {
-    list[idx] = { ...list[idx], ...updates };
-    saveLocalCategories(list);
-    return list[idx];
-  }
-  return null;
+  await updateDoc(doc(db, CATEGORIES_COLLECTION, id), payload);
+  return { id, ...payload };
 }
 
+/**
+ * Delete a category from Firestore
+ */
 export async function deleteCategory(id) {
-  if (isFirebaseConfigured && db) {
-    try {
-      await deleteDoc(doc(db, CATEGORIES_COLLECTION, id));
-    } catch (e) {
-      console.warn("Firestore error:", e);
-    }
-  }
-
-  const list = getLocalCategories().filter((c) => c.id !== id);
-  saveLocalCategories(list);
+  await deleteDoc(doc(db, CATEGORIES_COLLECTION, id));
   return true;
 }
