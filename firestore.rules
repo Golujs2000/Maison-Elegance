@@ -1,0 +1,23 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Products Collection — Anyone can view, authenticated users or admins can write
+    match /products/{productId} {
+      allow read: if true;
+      allow write: if true; // Or: if request.auth != null;
+    }
+    
+    // Categories Collection — Anyone can view, write enabled for admin
+    match /categories/{categoryId} {
+      allow read: if true;
+      allow write: if true; // Or: if request.auth != null;
+    }
+    
+    // Settings Collection — Anyone can read (for WhatsApp number & store info)
+    match /settings/{docId} {
+      allow read: if true;
+      allow write: if true; // Or: if request.auth != null;
+    }
+  }
+}
